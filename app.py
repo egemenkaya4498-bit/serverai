@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, make_response
 from flask_cors import CORS
 import google.generativeai as genai
 import os
@@ -6,17 +6,8 @@ from PIL import Image
 from io import BytesIO
 
 app = Flask(__name__)
-
-# 1. flask-cors'u varsayılan haliyle başlatıyoruz
-CORS(app)
-
-# 2. CORS İÇİN KESİN ÇÖZÜM: Tüm yanıtlara zorla CORS başlıklarını ekliyoruz
-@app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
-    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
-    return response
+# Tüm originlere izin ver
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # API Key Kontrolü
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -32,11 +23,21 @@ SYSTEM_INSTRUCTION = (
     "Soruları kısa, öz ve anlaşılır bir şekilde çöz."
 )
 
-# 3. OPTIONS'ı sildik, sadece POST'a izin veriyoruz çünkü OPTIONS'ı Flask-CORS halledecek.
-@app.route("/chat", methods=["POST"])
+@app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
+    # 1. TARAYICININ ÖN KONTROLÜ (PREFLIGHT) İÇİN ZORUNLU YANIT
+    if request.method == "OPTIONS":
+        response = make_response()
+        response.headers.add("Access-Control-Allow-Origin", "*")
+        response.headers.add("Access-Control-Allow-Headers", "*")
+        response.headers.add("Access-Control-Allow-Methods", "*")
+        return response
+
+    # 2. ASIL İŞLEM (POST)
     if not GEMINI_API_KEY:
-        return Response("Hata: GEMINI_API_KEY bulunamadı!", status=500)
+        res = make_response("Hata: GEMINI_API_KEY bulunamadı!", 500)
+        res.headers.add("Access-Control-Allow-Origin", "*")
+        return res
 
     user_message = request.form.get('message', '')
     image_file = request.files.get('image')
@@ -53,20 +54,27 @@ def chat():
             parts.append(user_message)
 
         if not parts:
-            return Response("İçerik boş!", status=400)
+            res = make_response("İçerik boş!", 400)
+            res.headers.add("Access-Control-Allow-Origin", "*")
+            return res
 
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             system_instruction=SYSTEM_INSTRUCTION
         )
         
-        response = model.generate_content(parts)
+        ai_response = model.generate_content(parts)
         
-        return Response(response.text, mimetype='text/plain')
+        # Başarılı yanıt
+        res = make_response(ai_response.text, 200)
+        res.headers.add("Access-Control-Allow-Origin", "*")
+        return res
 
     except Exception as e:
         print(f"KRİTİK HATA: {str(e)}")
-        return Response(f"Sunucu Hatası: {str(e)}", status=500)
+        res = make_response(f"Sunucu Hatası: {str(e)}", 500)
+        res.headers.add("Access-Control-Allow-Origin", "*")
+        return res
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
