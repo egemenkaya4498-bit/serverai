@@ -1,109 +1,153 @@
-from flask import Flask, request, make_response
+from flask import Flask, request, Response
 import google.generativeai as genai
 import os
-from PIL import Image 
+from PIL import Image
 from io import BytesIO
+import traceback
 
 app = Flask(__name__)
 
 # =============================================================
-# CORS - TÜM YANITLARA HEADER EKLE (EN ÖNEMLİ KISIM)
+# CORS MIDDLEWARE - HER İSTEKTE ÇALIŞIR
 # =============================================================
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        response = Response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, Origin, X-Requested-With'
+        response.headers['Access-Control-Max-Age'] = '3600'
+        return response
+
 @app.after_request
-def add_cors_headers(response):
+def add_cors(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With, Accept'
-    response.headers['Access-Control-Max-Age'] = '3600'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, Origin, X-Requested-With'
     return response
 
 # =============================================================
-# API KEY KONTROLÜ
+# HATA YÖNETİCİSİ - CORS HEADER'LARI İLE
+# =============================================================
+@app.errorhandler(Exception)
+def handle_error(error):
+    print(f"HATA: {str(error)}")
+    traceback.print_exc()
+    response = Response(f"Sunucu Hatası: {str(error)}", status=500)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+@app.errorhandler(404)
+def not_found(error):
+    response = Response("Endpoint bulunamadı", status=404)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+@app.errorhandler(500)
+def server_error(error):
+    response = Response("Sunucu hatası", status=500)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+# =============================================================
+# API YAPILANDIRMA
 # =============================================================
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    print("✓ Gemini API yapılandırıldı")
+else:
+    print("✗ GEMINI_API_KEY bulunamadı!")
 
 MODEL_NAME = "gemini-2.5-flash"
 
-SYSTEM_INSTRUCTION = (
-    "Sen Matematik Canavarı 1.0'sın. Kaya Studios tarafından geliştirildin. "
-    "8. sınıf öğrencilerine matematik sorularında yardımcı oluyorsun. "
-    "KESİNLİKLE sadece Türkçe konuşmalısın. "
-    "Soruları kısa, öz ve anlaşılır bir şekilde çöz. "
-    "Matematiksel ifadeleri LaTeX formatında yaz ($ ve $$ kullanarak)."
-)
+SYSTEM_INSTRUCTION = """Sen Matematik Canavarı'sın. Kaya Studios tarafından geliştirildin.
+8. sınıf öğrencilerine matematik sorularında yardımcı oluyorsun.
+Sadece Türkçe konuş. Soruları kısa ve anlaşılır şekilde çöz.
+Matematiksel ifadeleri LaTeX formatında yaz ($ ve $$ kullanarak)."""
 
 # =============================================================
-# ANA SAYFA - SUNUCU KONTROL
+# ANA SAYFA
 # =============================================================
 @app.route("/", methods=["GET"])
 def index():
-    return "Math Canavari API v2.0 - Aktif!"
+    return Response("Math Canavari API v2.0 - Aktif!", status=200)
+
+# =============================================================
+# SAĞLIK KONTROLÜ
+# =============================================================
+@app.route("/health", methods=["GET"])
+def health():
+    return Response("OK", status=200)
 
 # =============================================================
 # CHAT ENDPOINT
 # =============================================================
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
-    # OPTIONS (Preflight) isteği için boş yanıt
-    if request.method == "OPTIONS":
-        return make_response("", 204)
+    # OPTIONS zaten before_request'te handle ediliyor
     
     # API Key kontrolü
     if not GEMINI_API_KEY:
-        return make_response("Hata: GEMINI_API_KEY sunucuda tanımlı değil!", 500)
-    
-    # Kullanıcı mesajını al
-    user_message = request.form.get('message', '')
-    image_file = request.files.get('image')
-    
-    # İçerik kontrolü
-    if not user_message and not image_file:
-        return make_response("Hata: Mesaj veya görsel gerekli!", 400)
+        return Response("Hata: API anahtarı yapılandırılmamış!", status=500)
     
     try:
+        # Form verisini al
+        user_message = request.form.get('message', '').strip()
+        image_file = request.files.get('image')
+        
+        # Debug log
+        print(f"Gelen mesaj: {user_message[:50] if user_message else 'BOŞ'}...")
+        
+        # İçerik kontrolü
+        if not user_message and not image_file:
+            return Response("Mesaj veya görsel gerekli!", status=400)
+        
+        # İçerik parçalarını hazırla
         parts = []
         
-        # Görsel varsa işle
+        # Görsel işle
         if image_file:
             try:
                 img_data = image_file.read()
                 if img_data:
                     img = Image.open(BytesIO(img_data))
                     parts.append(img)
-            except Exception as img_error:
-                print(f"Görsel işleme hatası: {str(img_error)}")
+                    print("✓ Görsel eklendi")
+            except Exception as e:
+                print(f"Görsel hatası: {e}")
         
-        # Mesaj varsa ekle
+        # Mesajı ekle
         if user_message:
             parts.append(user_message)
         
-        # Parts boşsa hata ver
         if not parts:
-            return make_response("Hata: İşlenecek içerik bulunamadı!", 400)
+            return Response("İçerik işlenemedi!", status=400)
         
-        # Gemini modeli oluştur
+        # Gemini ile yanıt al
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             system_instruction=SYSTEM_INSTRUCTION
         )
         
-        # AI yanıtı al
-        ai_response = model.generate_content(parts)
+        result = model.generate_content(parts)
+        ai_text = result.text
         
-        # Başarılı yanıt
-        return make_response(ai_response.text, 200)
+        print(f"✓ Yanıt oluşturuldu: {len(ai_text)} karakter")
+        
+        return Response(ai_text, status=200, content_type='text/plain; charset=utf-8')
     
     except Exception as e:
-        error_message = str(e)
-        print(f"SUNUCU HATASI: {error_message}")
-        return make_response(f"Sunucu Hatası: {error_message}", 500)
+        error_msg = str(e)
+        print(f"CHAT HATASI: {error_msg}")
+        traceback.print_exc()
+        return Response(f"AI Hatası: {error_msg}", status=500)
 
 # =============================================================
-# SUNUCUYU BAŞLAT
+# SUNUCU BAŞLAT
 # =============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Sunucu {port} portunda başlatılıyor...")
+    print(f"Sunucu port {port}'da başlıyor...")
     app.run(host='0.0.0.0', port=port, debug=False)
