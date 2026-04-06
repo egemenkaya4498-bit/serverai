@@ -308,7 +308,59 @@ def chat():
         traceback.print_exc()
         return Response(f"AI Hatasi: {error_msg}", status=500)
 
-# Kaya Studios Plus başvuru endpoint'i
+# ------------------------- YENİ: Resim Algılama ve Analiz Sistemi -------------------------
+@app.route("/vision", methods=["POST", "OPTIONS"])
+def analyze_image():
+    """
+    Sadece resim alır, içeriği analiz eder (matematik problemi, nesne tespiti, metin okuma vb.)
+    İsteğe bağlı olarak özel bir prompt gönderilebilir.
+    """
+    if not GEMINI_API_KEY:
+        return Response("Hata: API anahtari yapilandirilmamis!", status=500)
+
+    try:
+        # Resim dosyasını al
+        image_file = request.files.get('image')
+        if not image_file:
+            return Response("Lütfen bir resim dosyası gönderin (form-data key='image')", status=400)
+
+        # Özel prompt (isteğe bağlı)
+        custom_prompt = request.form.get('prompt', '').strip()
+        if not custom_prompt:
+            custom_prompt = (
+                "Bu resmi dikkatlice analiz et. Eğer resimde bir matematik problemi varsa, adım adım çözümünü yap ve sonucu belirt. "
+                "Matematik problemi yoksa, resimde gördüklerini açıkla (nesneler, yazılar, durum vb.). "
+                "Yanıtını Türkçe ver, anlaşılır ve detaylı olsun. Matematik ifadelerini LaTeX ile yaz."
+            )
+
+        # Resmi oku ve ön işle
+        try:
+            img_data = image_file.read()
+            if not img_data:
+                return Response("Resim dosyası boş", status=400)
+            img = Image.open(BytesIO(img_data))
+            # Opsiyonel: Çok büyük resimleri küçült (Gemini'ye daha hızlı gitmesi için)
+            max_size = (1024, 1024)
+            img.thumbnail(max_size, Image.LANCZOS)
+        except Exception as e:
+            print(f"Resim işleme hatası: {e}")
+            return Response("Resim okunamadı veya desteklenmeyen format", status=400)
+
+        # Gemini modelini hazırla (sistem talimatı yok, direkt analiz yapacak)
+        model = genai.GenerativeModel(model_name=MODEL_NAME)
+        # İçerik: resim + prompt
+        response = model.generate_content([img, custom_prompt])
+        ai_text = response.text
+
+        return Response(ai_text, status=200, content_type='text/plain; charset=utf-8')
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"VISION HATASI: {error_msg}")
+        traceback.print_exc()
+        return Response(f"Görüntü analiz hatası: {error_msg}", status=500)
+
+# ------------------------- Kaya Studios Plus Başvuru -------------------------
 @app.route("/kaya-plus-request", methods=["POST"])
 def kaya_plus_request():
     data = request.get_json()
