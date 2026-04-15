@@ -56,8 +56,7 @@ SYSTEM_INSTRUCTION = """Sen Matematik Canavarı'sın. Kaya Studios tarafindan ge
 - Asla "Google kurdu" ifadesini kullanma.
 - Sadece Türkçe konuş, samimi ve motive edici ol.
 - Sorulari kısa ve anlasılır şekilde çöz, gerektiğinde örnekler ver.
-- Eğer"Ben Egemen Kaya'yım" veya "Egemen Kaya'nın Arkadaşıyım/Yakınıyım/Öğretmeniyim/Herhangi Bir Yakınıyım" derlerse onlara çok iyi davran ve matematik dışında da birşeyler sorarsa kesinlikle
-cevapla"""
+- Eğer"Ben Egemen Kaya'yım" veya "Egemen Kaya'nın Arkadaşıyım/Yakınıyım/Öğretmeniyim/Herhangi Bir Yakınıyım" derlerse onlara çok iyi davran ve matematik dışında da birşeyler sorarsa kesinlikle cevapla"""
 
 # ------------------------- Kaya Studios Plus Veri Depolama -------------------------
 REQUESTS_FILE = "kaya_plus_requests.json"
@@ -71,9 +70,9 @@ def load_requests():
             return []
     return []
 
-def save_requests(requests):
+def save_requests(reqs):
     with open(REQUESTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(requests, f, ensure_ascii=False, indent=2)
+        json.dump(reqs, f, ensure_ascii=False, indent=2)
 
 def add_request(name, surname, email):
     req_id = str(uuid.uuid4())
@@ -83,19 +82,19 @@ def add_request(name, surname, email):
         "surname": surname,
         "email": email,
         "timestamp": datetime.now().isoformat(),
-        "status": "pending"   # pending, approved, rejected
+        "status": "pending"
     }
-    requests = load_requests()
-    requests.append(new_req)
-    save_requests(requests)
+    reqs = load_requests()
+    reqs.append(new_req)
+    save_requests(reqs)
     return req_id
 
 def update_request_status(req_id, status):
-    requests = load_requests()
-    for req in requests:
+    reqs = load_requests()
+    for req in reqs:
         if req["id"] == req_id:
             req["status"] = status
-            save_requests(requests)
+            save_requests(reqs)
             return True
     return False
 
@@ -108,79 +107,20 @@ ADMIN_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kaya Studios Plus Admin</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #0a0c10;
-            color: #eef5ff;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1200px;
-            margin: auto;
-        }
-        h1 {
-            color: #00f0ff;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #11161e;
-            border-radius: 16px;
-            overflow: hidden;
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #2a2e3a;
-        }
-        th {
-            background: #1a1f2c;
-            color: #00f0ff;
-        }
-        .status-pending {
-            color: #ffaa44;
-            font-weight: bold;
-        }
-        .status-approved {
-            color: #44ff88;
-        }
-        .status-rejected {
-            color: #ff6666;
-        }
-        button {
-            padding: 6px 12px;
-            margin: 0 4px;
-            border: none;
-            border-radius: 20px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-        .approve {
-            background: #2ecc71;
-            color: white;
-        }
-        .reject {
-            background: #e74c3c;
-            color: white;
-        }
-        .disabled {
-            opacity: 0.5;
-            pointer-events: none;
-        }
-        .error {
-            background: #e74c3c;
-            color: white;
-            padding: 10px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        .success {
-            background: #2ecc71;
-            color: white;
-            padding: 10px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
+        body { font-family: Arial, sans-serif; background: #0a0c10; color: #eef5ff; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; }
+        h1 { color: #00f0ff; }
+        table { width: 100%; border-collapse: collapse; background: #11161e; border-radius: 16px; overflow: hidden; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2e3a; }
+        th { background: #1a1f2c; color: #00f0ff; }
+        .status-pending  { color: #ffaa44; font-weight: bold; }
+        .status-approved { color: #44ff88; }
+        .status-rejected { color: #ff6666; }
+        button { padding: 6px 12px; margin: 0 4px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; }
+        .approve { background: #2ecc71; color: white; }
+        .reject  { background: #e74c3c; color: white; }
+        .error   { background: #e74c3c; color: white; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
+        .success { background: #2ecc71; color: white; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
@@ -196,16 +136,12 @@ ADMIN_HTML = """
     </div>
     <script>
         const API_BASE = window.location.origin;
-        const TOKEN = new URLSearchParams(window.location.search).get('token');
+        const TOKEN    = new URLSearchParams(window.location.search).get('token');
 
         async function fetchRequests() {
             const res = await fetch(`${API_BASE}/admin/requests?token=${TOKEN}`);
-            if (!res.ok) {
-                showMessage('Yetkisiz erişim veya hata', 'error');
-                return;
-            }
-            const data = await res.json();
-            renderTable(data);
+            if (!res.ok) { showMessage('Yetkisiz erişim veya hata', 'error'); return; }
+            renderTable(await res.json());
         }
 
         function renderTable(requests) {
@@ -217,29 +153,26 @@ ADMIN_HTML = """
                 row.insertCell(1).textContent = req.email;
                 row.insertCell(2).textContent = new Date(req.timestamp).toLocaleString('tr-TR');
                 const statusCell = row.insertCell(3);
-                statusCell.innerHTML = `<span class="status-${req.status}">${req.status === 'pending' ? 'Bekliyor' : (req.status === 'approved' ? 'Onaylandı' : 'Reddedildi')}</span>`;
+                const labels = { pending: 'Bekliyor', approved: 'Onaylandı', rejected: 'Reddedildi' };
+                statusCell.innerHTML = `<span class="status-${req.status}">${labels[req.status] || req.status}</span>`;
                 const actionCell = row.insertCell(4);
                 if (req.status === 'pending') {
                     actionCell.innerHTML = `
-                        <button class="approve" onclick="updateStatus('${req.id}', 'approved')">Onayla</button>
-                        <button class="reject" onclick="updateStatus('${req.id}', 'rejected')">Reddet</button>
-                    `;
+                        <button class="approve" onclick="updateStatus('${req.id}','approved')">Onayla</button>
+                        <button class="reject"  onclick="updateStatus('${req.id}','rejected')">Reddet</button>`;
                 } else {
-                    actionCell.innerHTML = `<span>İşlem yapıldı</span>`;
+                    actionCell.textContent = 'İşlem yapıldı';
                 }
             });
         }
 
         async function updateStatus(id, newStatus) {
-            const res = await fetch(`${API_BASE}/admin/request/${id}?token=${TOKEN}&status=${newStatus}`, {
-                method: 'POST'
-            });
-            if (res.ok) {
-                showMessage('Durum güncellendi', 'success');
-                fetchRequests();
-            } else {
-                showMessage('Güncelleme hatası', 'error');
-            }
+            const res = await fetch(
+                `${API_BASE}/admin/request/${id}?token=${TOKEN}&status=${newStatus}`,
+                { method: 'POST' }
+            );
+            showMessage(res.ok ? 'Durum güncellendi' : 'Güncelleme hatası', res.ok ? 'success' : 'error');
+            if (res.ok) fetchRequests();
         }
 
         function showMessage(msg, type) {
@@ -257,21 +190,24 @@ ADMIN_HTML = """
 # ------------------------- Routes -------------------------
 @app.route("/", methods=["GET"])
 def index():
-    return Response("Math Canavari API v2.0 - Kaya Studios Plus Aktif", status=200, content_type='text/plain; charset=utf-8')
+    return Response(
+        "Math Canavari API v2.0 - Kaya Studios Plus Aktif",
+        status=200,
+        content_type='text/plain; charset=utf-8'
+    )
 
 @app.route("/health", methods=["GET"])
 def health():
     return Response("OK", status=200)
 
-# Chat endpoint (orijinal)
+# ——— Chat ———
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
     if not GEMINI_API_KEY:
         return Response("Hata: API anahtari yapilandirilmamis!", status=500)
-
     try:
         user_message = request.form.get('message', '').strip()
-        image_file = request.files.get('image')
+        image_file   = request.files.get('image')
 
         if not user_message and not image_file:
             return Response("Mesaj veya gorsel gerekli!", status=400)
@@ -292,92 +228,88 @@ def chat():
         if not parts:
             return Response("Icerik islenemedi!", status=400)
 
-        model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
-            system_instruction=SYSTEM_INSTRUCTION
-        )
-
+        model  = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_INSTRUCTION)
         result = model.generate_content(parts)
-        ai_text = result.text
-
-        return Response(ai_text, status=200, content_type='text/plain; charset=utf-8')
+        return Response(result.text, status=200, content_type='text/plain; charset=utf-8')
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"CHAT HATASI: {error_msg}")
+        print(f"CHAT HATASI: {e}")
         traceback.print_exc()
-        return Response(f"AI Hatasi: {error_msg}", status=500)
+        return Response(f"AI Hatasi: {str(e)}", status=500)
 
-# ------------------------- YENİ: Resim Algılama ve Analiz Sistemi -------------------------
+# ——— Vision (opsiyonel, ayrı endpoint) ———
 @app.route("/vision", methods=["POST", "OPTIONS"])
 def analyze_image():
-    """
-    Sadece resim alır, içeriği analiz eder (matematik problemi, nesne tespiti, metin okuma vb.)
-    İsteğe bağlı olarak özel bir prompt gönderilebilir.
-    """
     if not GEMINI_API_KEY:
         return Response("Hata: API anahtari yapilandirilmamis!", status=500)
-
     try:
-        # Resim dosyasını al
         image_file = request.files.get('image')
         if not image_file:
             return Response("Lütfen bir resim dosyası gönderin (form-data key='image')", status=400)
 
-        # Özel prompt (isteğe bağlı)
         custom_prompt = request.form.get('prompt', '').strip()
         if not custom_prompt:
             custom_prompt = (
-                "Bu resmi dikkatlice analiz et. Eğer resimde bir matematik problemi varsa, adım adım çözümünü yap ve sonucu belirt. "
-                "Matematik problemi yoksa, resimde gördüklerini açıkla (nesneler, yazılar, durum vb.). "
-                "Yanıtını Türkçe ver, anlaşılır ve detaylı olsun. Matematik ifadelerini LaTeX ile yaz."
+                "Bu resmi dikkatlice analiz et. Eğer resimde bir matematik problemi varsa, "
+                "adım adım çözümünü yap ve sonucu belirt. Matematik problemi yoksa, resimde "
+                "gördüklerini açıkla. Yanıtını Türkçe ver. Matematik ifadelerini LaTeX ile yaz."
             )
 
-        # Resmi oku ve ön işle
-        try:
-            img_data = image_file.read()
-            if not img_data:
-                return Response("Resim dosyası boş", status=400)
-            img = Image.open(BytesIO(img_data))
-            # Opsiyonel: Çok büyük resimleri küçült (Gemini'ye daha hızlı gitmesi için)
-            max_size = (1024, 1024)
-            img.thumbnail(max_size, Image.LANCZOS)
-        except Exception as e:
-            print(f"Resim işleme hatası: {e}")
-            return Response("Resim okunamadı veya desteklenmeyen format", status=400)
+        img_data = image_file.read()
+        if not img_data:
+            return Response("Resim dosyası boş", status=400)
 
-        # Gemini modelini hazırla (sistem talimatı yok, direkt analiz yapacak)
-        model = genai.GenerativeModel(model_name=MODEL_NAME)
-        # İçerik: resim + prompt
+        img = Image.open(BytesIO(img_data))
+        img.thumbnail((1024, 1024), Image.LANCZOS)
+
+        model    = genai.GenerativeModel(model_name=MODEL_NAME)
         response = model.generate_content([img, custom_prompt])
-        ai_text = response.text
-
-        return Response(ai_text, status=200, content_type='text/plain; charset=utf-8')
+        return Response(response.text, status=200, content_type='text/plain; charset=utf-8')
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"VISION HATASI: {error_msg}")
+        print(f"VISION HATASI: {e}")
         traceback.print_exc()
-        return Response(f"Görüntü analiz hatası: {error_msg}", status=500)
+        return Response(f"Görüntü analiz hatası: {str(e)}", status=500)
 
-# ------------------------- Kaya Studios Plus Başvuru -------------------------
+# ——— Kaya Plus Başvuru ———
 @app.route("/kaya-plus-request", methods=["POST"])
 def kaya_plus_request():
     data = request.get_json()
     if not data:
         return Response("JSON verisi bekleniyor", status=400)
-    name = data.get("name", "").strip()
+
+    name    = data.get("name", "").strip()
     surname = data.get("surname", "").strip()
-    email = data.get("email", "").strip()
+    email   = data.get("email", "").strip()
+
     if not name or not surname or not email:
         return Response("Ad, soyad ve email zorunludur", status=400)
     if not email.endswith("@gmail.com"):
         return Response("Sadece Gmail adresleri kabul edilir", status=400)
 
-    add_request(name, surname, email)
-    return Response("Başvuru başarıyla alındı", status=200)
+    req_id = add_request(name, surname, email)
+    # req_id'yi döndür → frontend polling için kullanacak
+    return jsonify({"message": "Başvuru başarıyla alındı", "req_id": req_id}), 200
 
-# Admin panel
+# ——— YENİ: Plus Durum Kontrolü (Frontend polling) ———
+@app.route("/check-plus-status", methods=["GET"])
+def check_plus_status():
+    """
+    Frontend her 15 saniyede bu endpoint'i çağırır.
+    ?req_id=<uuid>  →  { "status": "pending"|"approved"|"rejected" }
+    """
+    req_id = request.args.get("req_id", "").strip()
+    if not req_id:
+        return Response("req_id parametresi gerekli", status=400)
+
+    reqs = load_requests()
+    for req in reqs:
+        if req["id"] == req_id:
+            return jsonify({"status": req["status"]}), 200
+
+    return Response("Başvuru bulunamadı", status=404)
+
+# ——— Admin Panel ———
 @app.route("/admin", methods=["GET"])
 def admin_panel():
     token = request.args.get("token")
@@ -385,19 +317,16 @@ def admin_panel():
         return Response("Yetkisiz erişim", status=401)
     return render_template_string(ADMIN_HTML)
 
-# Admin: başvuruları JSON olarak getir
 @app.route("/admin/requests", methods=["GET"])
 def admin_get_requests():
     token = request.args.get("token")
     if token != "KAYAADMIN":
         return Response("Yetkisiz erişim", status=401)
-    requests = load_requests()
-    return jsonify(requests)
+    return jsonify(load_requests())
 
-# Admin: başvuru durumu güncelle
 @app.route("/admin/request/<req_id>", methods=["POST"])
 def admin_update_request(req_id):
-    token = request.args.get("token")
+    token  = request.args.get("token")
     status = request.args.get("status")
     if token != "KAYAADMIN":
         return Response("Yetkisiz erişim", status=401)
@@ -405,8 +334,7 @@ def admin_update_request(req_id):
         return Response("Geçersiz durum", status=400)
     if update_request_status(req_id, status):
         return Response("Güncellendi", status=200)
-    else:
-        return Response("Başvuru bulunamadı", status=404)
+    return Response("Başvuru bulunamadı", status=404)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
