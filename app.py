@@ -1,12 +1,12 @@
-from flask import Flask, request, Response, jsonify, render_template_string
-import google.generativeai as genai
+from flask import Flask, request, Response, jsonify, render_template_string, stream_with_context
+import requests
 import os
 from PIL import Image
 from io import BytesIO
 import traceback
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 from collections import defaultdict
 import re
@@ -39,20 +39,19 @@ def handle_error(error):
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
-# ------------------------- Gemini -------------------------
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    print("BASARILI: Gemini API yapilandirildi")
-else:
-    print("HATA: GEMINI_API_KEY bulunamadi!")
+# ------------------------- Model Yapılandırması (Hugging Face) -------------------------
+HF_API_KEY = os.environ.get('HF_API_KEY')
+if not HF_API_KEY:
+    print("UYARI: HF_API_KEY bulunamadı! Model yanıtları çalışmayacak.")
 
-MODEL_NAME = "gemini-2.5-flash"
+HF_MODEL_ID = os.environ.get('HF_MODEL_ID', 'google/gemma-4-31b-it')
+HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}"
+
+HEADERS = {"Authorization": f"Bearer {HF_API_KEY}"} if HF_API_KEY else {}
 
 # ------------------------- ZAMAN -------------------------
 def get_turkey_time_info():
     now_utc = datetime.now(timezone.utc)
-    from datetime import timedelta
     now_tr = now_utc + timedelta(hours=3)
     days_tr   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
     months_tr = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
@@ -168,7 +167,7 @@ def check_content(message):
             return False, "Mesajınız güvenlik filtresine takıldı. Lütfen normal bir soru sorun."
     return True, ""
 
-# ------------------------- VERİTABANI -------------------------
+# ------------------------- VERİTABANI (JSON) -------------------------
 REQUESTS_FILE = "kaya_plus_requests.json"
 
 def load_requests():
@@ -207,10 +206,6 @@ def update_request_status(req_id, status):
     return False
 
 def email_already_applied(email):
-    """
-    DÜZELTME: cancelled ve rejected durumları tekrar başvurabilir.
-    Sadece pending ve approved durumları engellenir.
-    """
     reqs = load_requests()
     for req in reqs:
         if req["email"].lower() == email.lower() and req["status"] in ("pending", "approved"):
@@ -221,8 +216,7 @@ def cancel_by_req_id(req_id):
     reqs = load_requests()
     for req in reqs:
         if req["id"] == req_id:
-            # Sadece approved olanlar iptal edilebilir
-            if req["status"] not in ("approved",):
+            if req["status"] != "approved":
                 return False, "sadece_approved"
             req["status"]       = "cancelled"
             req["cancelled_at"] = datetime.now(timezone.utc).isoformat()
@@ -244,7 +238,7 @@ def cancel_by_admin(req_id):
             return True, "ok"
     return False, "bulunamadi"
 
-# ------------------------- Admin HTML -------------------------
+# ------------------------- Admin HTML (Aynı) -------------------------
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -400,30 +394,35 @@ ADMIN_HTML = """
 # ------------------------- ROUTES -------------------------
 @app.route("/", methods=["GET"])
 def index():
-    return Response("Math Canavari API v3.1 - Kaya Studios Plus Aktif", status=200, content_type='text/plain; charset=utf-8')
+    return Response("Math Canavari API v4.0 - Gemma 4 31B - Streaming Aktif", status=200, content_type='text/plain; charset=utf-8')
 
 @app.route("/health", methods=["GET"])
 def health():
     time_info = get_turkey_time_info()
-    return jsonify({"status": "OK", "turkey_time": time_info["full"], "version": "3.1"})
+    return jsonify({"status": "OK", "turkey_time": time_info["full"], "version": "4.0", "model": HF_MODEL_ID})
 
+# ------------------------- STREAMING CHAT (YENİ) -------------------------
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
-    if not GEMINI_API_KEY:
-        return Response("Hata: API anahtari yapilandirilmamis!", status=500)
+    if not HF_API_KEY:
+        return Response("Hata: HF_API_KEY yapilandirilmamis!", status=500)
+
     ip = get_client_ip()
     allowed, err = check_rate_limit_chat(ip)
     if not allowed:
         return Response(err, status=429)
+
     try:
         user_message = request.form.get('message', '').strip()
         image_file   = request.files.get('image')
         user_name    = request.form.get('user_name', '').strip()
         is_plus      = request.form.get('is_plus', 'false').lower() == 'true'
+
         if not user_message and not image_file:
             return Response("Mesaj veya görsel gerekli!", status=400)
         if len(user_message) > MAX_MSG_LENGTH:
             return Response(f"Mesaj çok uzun. Maksimum {MAX_MSG_LENGTH} karakter gönderin.", status=400)
+
         if user_message:
             is_spam, spam_err = check_spam(ip, user_message)
             if is_spam:
@@ -431,63 +430,145 @@ def chat():
             ok, content_err = check_content(user_message)
             if not ok:
                 return Response(content_err, status=400)
-        parts = []
+
+        # Görsel varsa base64'e çevir (Hugging Face text+image destekliyorsa)
+        # Şimdilik sadece metin destekleniyor, görsel varsa hata döndürüyoruz.
         if image_file:
-            try:
-                img_data = image_file.read()
-                if len(img_data) / (1024 * 1024) > MAX_IMAGE_SIZE_MB:
-                    return Response(f"Resim çok büyük. Maksimum {MAX_IMAGE_SIZE_MB}MB.", status=400)
-                if img_data:
-                    img = Image.open(BytesIO(img_data))
-                    img.thumbnail((1024, 1024), Image.LANCZOS)
-                    parts.append(img)
-            except Exception as e:
-                print(f"Görsel hatası: {e}")
-                return Response("Resim okunamadı veya desteklenmeyen format.", status=400)
-        if user_message:
-            parts.append(user_message)
-        if not parts:
-            return Response("İçerik işlenemedi!", status=400)
+            return Response("Görsel işleme şu anda desteklenmiyor. Lütfen sadece metin gönderin.", status=400)
+
+        # Sistem prompt'u
         system_inst = build_system_instruction(user_name=user_name if user_name else None, is_plus=is_plus)
-        model  = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=system_inst)
-        result = model.generate_content(parts)
-        return Response(result.text, status=200, content_type='text/plain; charset=utf-8')
+
+        # Hugging Face için sohbet formatı (messages listesi)
+        messages = [
+            {"role": "system", "content": system_inst},
+            {"role": "user",   "content": user_message}
+        ]
+
+        def generate_stream():
+            """Hugging Face API'ye streaming isteği yapıp SSE olarak döner."""
+            payload = {
+                "model": HF_MODEL_ID,
+                "messages": messages,
+                "max_tokens": 1024,
+                "temperature": 0.7,
+                "stream": True
+            }
+            try:
+                with requests.post(HF_API_URL, headers=HEADERS, json=payload, stream=True, timeout=60) as resp:
+                    if resp.status_code != 200:
+                        error_msg = f"API hatası: {resp.status_code} - {resp.text}"
+                        yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                        return
+
+                    thinking_mode = False   # <<<THINKING>>> başladı mı?
+                    answer_mode = False     # <<<ANSWER>>> başladı mı?
+                    buffer = ""
+
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                yield "event: done\ndata: {}\n\n"
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                # Hugging Face SSE formatı: {"token": {"text": "..."}}
+                                token_text = chunk.get("token", {}).get("text", "")
+                                if not token_text:
+                                    continue
+
+                                buffer += token_text
+
+                                # Düşünme / cevap etiketlerini ara
+                                while True:
+                                    if not thinking_mode and not answer_mode:
+                                        # Etiket arama
+                                        think_start = buffer.find("<<<THINKING>>>")
+                                        ans_start = buffer.find("<<<ANSWER>>>")
+                                        if think_start != -1:
+                                            # Önce normal metin varsa gönder (cevap olarak)
+                                            if think_start > 0:
+                                                pre_text = buffer[:think_start]
+                                                yield f"event: answer\ndata: {json.dumps({'text': pre_text})}\n\n"
+                                            buffer = buffer[think_start + len("<<<THINKING>>>"):]
+                                            thinking_mode = True
+                                            answer_mode = False
+                                        elif ans_start != -1:
+                                            if ans_start > 0:
+                                                pre_text = buffer[:ans_start]
+                                                yield f"event: answer\ndata: {json.dumps({'text': pre_text})}\n\n"
+                                            buffer = buffer[ans_start + len("<<<ANSWER>>>"):]
+                                            thinking_mode = False
+                                            answer_mode = True
+                                        else:
+                                            # Etiket yok, son parçayı answer olarak gönder
+                                            if len(buffer) > 20:  # 20 karakterden uzunsa
+                                                send_text = buffer[:-10]  # son 10 karakteri sakla (etiket başlangıcı olabilir)
+                                                yield f"event: answer\ndata: {json.dumps({'text': send_text})}\n\n"
+                                                buffer = buffer[-10:]
+                                            break
+                                    elif thinking_mode:
+                                        end_idx = buffer.find("<<<ANSWER>>>")
+                                        if end_idx != -1:
+                                            thinking_part = buffer[:end_idx]
+                                            if thinking_part:
+                                                yield f"event: thinking\ndata: {json.dumps({'text': thinking_part})}\n\n"
+                                            buffer = buffer[end_idx + len("<<<ANSWER>>>"):]
+                                            thinking_mode = False
+                                            answer_mode = True
+                                        else:
+                                            # Henüz cevap etiketi gelmedi, düşünme devam ediyor
+                                            # Belli aralıklarla gönder (gerçek zamanlı gözükmesi için)
+                                            if len(buffer) > 20:
+                                                send_text = buffer[:-10]
+                                                yield f"event: thinking\ndata: {json.dumps({'text': send_text})}\n\n"
+                                                buffer = buffer[-10:]
+                                            break
+                                    elif answer_mode:
+                                        # Cevap modunda her geleni doğrudan answer olarak gönder
+                                        yield f"event: answer\ndata: {json.dumps({'text': token_text})}\n\n"
+                                        # (Not: buffer temizliği yukarıda yapıldı)
+                            except json.JSONDecodeError:
+                                continue
+
+                    # Kalan buffer'ı gönder
+                    if buffer:
+                        if thinking_mode:
+                            yield f"event: thinking\ndata: {json.dumps({'text': buffer})}\n\n"
+                        elif answer_mode:
+                            yield f"event: answer\ndata: {json.dumps({'text': buffer})}\n\n"
+                        else:
+                            yield f"event: answer\ndata: {json.dumps({'text': buffer})}\n\n"
+
+                    yield "event: done\ndata: {}\n\n"
+
+            except Exception as e:
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+        return Response(
+            stream_with_context(generate_stream()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive"
+            }
+        )
+
     except Exception as e:
         print(f"CHAT HATASI: {e}")
         traceback.print_exc()
         return Response(f"AI Hatası: {str(e)}", status=500)
 
+# ------------------------- GÖRÜNTÜ ANALİZİ (Şimdilik devre dışı) -------------------------
 @app.route("/vision", methods=["POST", "OPTIONS"])
 def analyze_image():
-    if not GEMINI_API_KEY:
-        return Response("Hata: API anahtari yapilandirilmamis!", status=500)
-    ip = get_client_ip()
-    allowed, err = check_rate_limit_chat(ip)
-    if not allowed:
-        return Response(err, status=429)
-    try:
-        image_file = request.files.get('image')
-        if not image_file:
-            return Response("Lütfen bir resim dosyası gönderin.", status=400)
-        custom_prompt = request.form.get('prompt', '').strip() or (
-            "Bu resmi dikkatlice analiz et. Eğer resimde bir matematik problemi varsa, "
-            "adım adım çözümünü yap. Yanıtını Türkçe ver. Matematik ifadelerini LaTeX ile yaz."
-        )
-        img_data = image_file.read()
-        if not img_data:
-            return Response("Resim dosyası boş", status=400)
-        if len(img_data) / (1024 * 1024) > MAX_IMAGE_SIZE_MB:
-            return Response(f"Resim çok büyük. Maksimum {MAX_IMAGE_SIZE_MB}MB.", status=400)
-        img = Image.open(BytesIO(img_data))
-        img.thumbnail((1024, 1024), Image.LANCZOS)
-        model    = genai.GenerativeModel(model_name=MODEL_NAME)
-        response = model.generate_content([img, custom_prompt])
-        return Response(response.text, status=200, content_type='text/plain; charset=utf-8')
-    except Exception as e:
-        print(f"VISION HATASI: {e}")
-        traceback.print_exc()
-        return Response(f"Görüntü analiz hatası: {str(e)}", status=500)
+    return Response("Görsel analiz şu anda Gemma modeli ile desteklenmiyor.", status=503)
 
+# ------------------------- KAYA PLUS İŞLEMLERİ (AYNI) -------------------------
 @app.route("/kaya-plus-request", methods=["POST"])
 def kaya_plus_request():
     ip = get_client_ip()
@@ -537,7 +618,6 @@ def check_plus_status():
             }), 200
     return Response("Başvuru bulunamadı", status=404)
 
-# DÜZELTME: cancel_by_req_id artık tuple döndürüyor
 @app.route("/cancel-plus", methods=["POST"])
 def cancel_plus():
     data = request.get_json()
@@ -610,4 +690,5 @@ def admin_update_request(req_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"Sunucu port {port} üzerinde başlıyor...")
+    print(f"Model: {HF_MODEL_ID}")
     app.run(host='0.0.0.0', port=port, debug=False)
