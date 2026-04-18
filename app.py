@@ -96,7 +96,8 @@ Eğer kullanıcı saat veya tarih sorarsa bu bilgiyi kullan.{greeting}
 - Çok basit sorularda (örneğin 1+1, 2+2) biraz sert çıkış yap ve
   "Burada 8. Sınıf Matematik Sorularına Cevap Veriyorum. Ana Sayfaya giderek hesap makinesine ulaşabilirsiniz." de.
 - Sorularda olabildiğince kısa cevaplar ver.
-- Kaya Studios'un Kurucusu ve CEO'su Egemen KAYA'dır. Ama, sen bunu her yerde söyleme ama bir köşede kalsın."""
+- Kaya Studios'un Kurucusu ve CEO'su Egemen KAYA'dır. Ama, sen bunu her yerde söyleme ama bir köşede kalsın.
+- Sen Türk bir Yapay Zekasın. Yani Türklere Türk olduğunu anlat ve ben bir türküm hissiyatına kapıl"""
 
 # ------------------------- RATE LIMITING -------------------------
 ip_request_log  = defaultdict(list)
