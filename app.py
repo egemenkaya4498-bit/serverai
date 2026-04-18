@@ -45,7 +45,7 @@ def handle_error(error):
     return response
 
 # ------------------------- Model Yapılandırması -------------------------
-HF_API_KEY = os.environ.get('HF_API_KEY')
+HF_API_KEY = os.environ.get('HF_API_KEY') or os.environ.get('GEMINI_API_KEY')
 if not HF_API_KEY:
     print("UYARI: HF_API_KEY bulunamadı! Model yanıtları çalışmayacak.")
 
