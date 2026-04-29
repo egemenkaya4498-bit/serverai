@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import time
 from collections import defaultdict
 import re
+import requests as http_requests
 
 app = Flask(__name__)
 
@@ -47,34 +48,196 @@ if GEMINI_API_KEY:
 else:
     print("HATA: GEMINI_API_KEY bulunamadi!")
 
+# ------------------------- Google Search -------------------------
+GOOGLE_API_KEY    = os.environ.get('GOOGLE_SEARCH_API_KEY', '')
+GOOGLE_CX         = os.environ.get('GOOGLE_SEARCH_CX', '')
+GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+
 MODEL_NAME = "gemini-2.5-flash"
+
+# ------------------------- ARAŞTIRMA GEREKSİNİM TESPİTİ -------------------------
+# Bu kalıplar backend'de de kontrol edilir — AI'a araştırma bilgisi verilip verilmeyeceğini belirler.
+RESEARCH_PATTERNS = [
+    # Tarih/Olay sorguları
+    (r"ne\s*zaman\s*(doğdu|öldü|doğmuş|ölmüş|vefat|kuruldu|kurulmuş|keşfedildi|icat|bulundu|başladı|bitti|oldu|yapıldı|açıldı|kapandı)", "event"),
+    (r"(doğum|ölüm|vefat|kuruluş)\s*(tarihi|günü|yılı|senesi)", "event"),
+    (r"hangi\s*(tarih|yıl|gün|ay|dönem|çağ|yüzyıl)", "event"),
+    # Ünlü kişiler
+    (r"(atatürk|mustafa\s*kemal|einstein|newton|tesla|edison|mozart|beethoven|"
+     r"da\s*vinci|leonardo|picasso|shakespeare|fatih\s*sultan|kanuni|yavuz\s*sultan|"
+     r"mimar\s*sinan|nazım\s*hikmet|yunus\s*emre|mehmet\s*akif|barış\s*manço|"
+     r"zeki\s*müren|tarkan|elon\s*musk|steve\s*jobs|bill\s*gates|mark\s*zuckerberg|"
+     r"jeff\s*bezos|alan\s*turing|marie\s*curie|nikola\s*tesla|stephen\s*hawking|"
+     r"galileo|kopernik|kepler|pythagoras|pisagor|arşimet|archimedes|öklid|euclid|"
+     r"euler|gauss|fibonacci|fermat|pascal|descartes|leibniz|riemann|hilbert|"
+     r"ramanujan|emmy\s*noether|ada\s*lovelace|al-?harizmi|harezmi|ali\s*kuşçu|"
+     r"uluğ\s*bey|ibn-?i?\s*sina|farabi|biruni|hayyam|ömer\s*hayyam|cahit\s*arf)", "person"),
+    # Özel günler
+    (r"(anneler\s*günü|babalar\s*günü|sevgililer\s*günü|öğretmenler\s*günü|"
+     r"dünya\s*\w+\s*günü|cumhuriyet\s*bayramı|zafer\s*bayramı|19\s*mayıs|"
+     r"23\s*nisan|30\s*ağustos|29\s*ekim|ramazan\s*bayramı|kurban\s*bayramı|"
+     r"yılbaşı|noel|nevruz|hıdırellez|kadınlar\s*günü|çocuk\s*bayramı|"
+     r"işçi\s*bayramı|1\s*mayıs|pi\s*günü|matematik\s*günü)", "special_day"),
+    # Dünya bilgisi
+    (r"(nüfusu|başkenti|para\s*birimi|yüzölçümü|en\s*büyük\s*şehri|resmi\s*dili)\s*(ne|kaç|nedir)", "world_info"),
+    (r"dünya[''nın]*\s*(en\s*büyük|en\s*küçük|en\s*uzun|en\s*kısa|en\s*yüksek|en\s*derin|en\s*geniş|en\s*hızlı|en\s*ağır|en\s*sıcak|en\s*soğuk|en\s*kalabalık)", "world_record"),
+    # Kim/ne sorguları
+    (r"(kim|kimdir|kimdi|kim\s*tarafından|kimin\s*eseri)\s*\??$", "who"),
+    (r"kaç\s*(yılında|senesinde|tarihinde)", "year"),
+    (r"(tarihi|tarihçesi)\s*(nedir|ne|hakkında)", "history"),
+    (r"(kim\s*buldu|kim\s*keşfetti|kim\s*geliştirdi|kim\s*icat\s*etti|kim\s*yazdı|kim\s*besteledi|kim\s*tasarladı)", "discovery"),
+    (r"(hangi\s*bilim\s*insanı|hangi\s*matematikçi|hangi\s*fizikçi|hangi\s*kimyager|hangi\s*mühendis|hangi\s*mimar|hangi\s*sanatçı|hangi\s*yazar|hangi\s*şair)", "scientist"),
+    (r"(şu\s*an|şuan|şimdi|güncel|son\s*durum|günümüzde)", "current"),
+    (r"(kaç\s*yaşında|yaşıyor\s*mu|hayatta\s*mı|sağ\s*mı|ne\s*zaman\s*öldü)", "alive"),
+    (r"(nerede\s*doğdu|nerede\s*öldü|nerede\s*yaşıyor|mezarı\s*nerede)", "location"),
+    (r"(formül|teorem|kural|yasa|kanun)\w*\s*(kimin|kim\s*tarafından|ne\s*zaman|hangi\s*yıl)", "formula"),
+    (r"(pi\s*sayısı|euler\s*sayısı|altın\s*oran|fibonacci)\w*\s*(ne|nedir|kim|tarih)", "math_concept"),
+    (r"(\d{1,2})\s*(ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\s*(ne\s*oldu|nedir|önemi)", "date_specific"),
+]
+
+# Saf matematik ifadeleri — araştırma GEREKMİYOR
+PURE_MATH_PATTERNS = [
+    r"^\s*[\d\s\+\-\*\/\(\)\^\.\,\=\<\>]+\s*$",  # Sadece sayı ve operatörler
+    r"^(hesapla|çöz|bul|basitleştir|sadeleştir|türev\s+al|integral\s+al|limit\s+bul|matris|denklem\s+çöz|eşitsizlik)\s",
+    r"^(sin|cos|tan|log|ln|sqrt|karekök)\s*[\(\d]",
+    r"^\d+\s*[\+\-\*\/\^]\s*\d+",
+]
+
+def needs_research(text: str) -> tuple[bool, str]:
+    """
+    Metnin Google araştırması gerektirip gerektirmediğini tespit eder.
+    Returns: (needs_research: bool, search_query: str)
+    """
+    lower = text.lower().strip()
+
+    # Çok kısa ise araştırma yapma
+    if len(lower) < 8:
+        return False, ""
+
+    # Saf matematik ise araştırma yapma
+    for pattern in PURE_MATH_PATTERNS:
+        if re.match(pattern, lower, re.IGNORECASE):
+            # Ama tarih/kişi içeriyorsa yine araştır
+            if not re.search(r"(kim|ne zaman|tarih|nedir|hangi yıl)", lower):
+                return False, ""
+
+    # Araştırma gerektiren kalıpları kontrol et
+    for pattern, _ in RESEARCH_PATTERNS:
+        if re.search(pattern, lower, re.IGNORECASE):
+            # Arama sorgusu oluştur — Türkçe + İngilizce
+            query = text.strip()
+            # Gereksiz kelimeleri temizle, özü al
+            query = re.sub(r"(lütfen|acaba|bana söyle|söyler misin|öğrenebilir miyim|merak ediyorum)", "", query, flags=re.IGNORECASE).strip()
+            return True, query
+
+    return False, ""
+
+
+def google_search(query: str, num_results: int = 5) -> list[dict]:
+    """
+    Google Custom Search API ile arama yapar.
+    Her sonuç: {title, link, snippet, domain}
+    """
+    if not GOOGLE_API_KEY or not GOOGLE_CX:
+        print("Google API anahtarı veya CX eksik — araştırma atlanıyor")
+        return []
+
+    try:
+        params = {
+            "key": GOOGLE_API_KEY,
+            "cx":  GOOGLE_CX,
+            "q":   query,
+            "num": num_results,
+            "lr":  "lang_tr",          # Türkçe sonuçları tercih et
+            "hl":  "tr",               # Arayüz dili Türkçe
+        }
+        response = http_requests.get(
+            GOOGLE_SEARCH_URL,
+            params=params,
+            timeout=8
+        )
+        if response.status_code != 200:
+            print(f"Google Search API hatası: {response.status_code} — {response.text[:200]}")
+            return []
+
+        data = response.json()
+        items = data.get("items", [])
+        results = []
+        for item in items:
+            domain = ""
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(item.get("link", "")).netloc.replace("www.", "")
+            except:
+                pass
+            results.append({
+                "title":   item.get("title", ""),
+                "link":    item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+                "domain":  domain,
+            })
+        return results
+
+    except Exception as e:
+        print(f"Google Search hatası: {e}")
+        return []
+
+
+def format_search_results_for_ai(results: list[dict], query: str) -> str:
+    """
+    Google arama sonuçlarını AI'ın anlayabileceği formata çevirir.
+    """
+    if not results:
+        return ""
+
+    lines = [
+        f"## Google Araştırma Sonuçları ({len(results)} kaynak)",
+        f"**Arama Sorgusu:** {query}",
+        "",
+        "Aşağıdaki gerçek Google arama sonuçlarını kullan. Bu bilgilere dayanarak cevap ver:",
+        "",
+    ]
+    for i, r in enumerate(results, 1):
+        lines.append(f"**Kaynak {i}: {r['title']}**")
+        lines.append(f"  🔗 {r['link']}")
+        if r['snippet']:
+            lines.append(f"  📄 {r['snippet']}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("Bu kaynaklardaki bilgileri kullanarak soruyu Türkçe yanıtla.")
+    lines.append("Cevabında hangi kaynaktan bilgi aldığını kısaca belirt.")
+
+    return "\n".join(lines)
 
 # ------------------------- ZAMAN -------------------------
 def get_turkey_time_info():
     now_utc = datetime.now(timezone.utc)
     from datetime import timedelta
-    now_tr = now_utc + timedelta(hours=3)
-    days_tr   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
-    months_tr = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
-                 "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
+    now_tr     = now_utc + timedelta(hours=3)
+    days_tr    = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
+    months_tr  = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran",
+                  "Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
     day_name   = days_tr[now_tr.weekday()]
     month_name = months_tr[now_tr.month - 1]
     time_str   = now_tr.strftime("%H:%M")
     date_str   = f"{now_tr.day} {month_name} {now_tr.year}"
-    hour = now_tr.hour
-    if 5 <= hour < 12:   time_of_day = "sabah"
+    hour       = now_tr.hour
+    if 5 <= hour < 12:    time_of_day = "sabah"
     elif 12 <= hour < 17: time_of_day = "öğleden sonra"
     elif 17 <= hour < 21: time_of_day = "akşam"
     else:                  time_of_day = "gece"
     return {
-        "time_str": time_str, "date_str": date_str,
-        "day_name": day_name, "time_of_day": time_of_day,
-        "full": f"{day_name}, {date_str} - Saat {time_str} ({time_of_day})"
+        "time_str":    time_str,
+        "date_str":    date_str,
+        "day_name":    day_name,
+        "time_of_day": time_of_day,
+        "full":        f"{day_name}, {date_str} - Saat {time_str} ({time_of_day})",
     }
 
-def build_system_instruction(user_name=None, is_plus=False):
+def build_system_instruction(user_name=None, is_plus=False, research_context=""):
     time_info = get_turkey_time_info()
-    greeting = ""
+    greeting  = ""
     if user_name:
         greeting = f"\nBu kullanıcının adı: {user_name}. Konuşmada uygun yerlerde '{user_name}' diye seslen."
     plus_rules = ""
@@ -82,6 +245,19 @@ def build_system_instruction(user_name=None, is_plus=False):
         plus_rules = """
 - Bu kullanıcı Kaya Studios Plus üyesidir. Her konuda yardımcı ol, sadece matematik ile sınırlı değilsin.
 - Kullanıcıya özel, daha detaylı ve kapsamlı cevaplar ver."""
+
+    research_block = ""
+    if research_context:
+        research_block = f"""
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ GOOGLE ARAŞTIRMA SONUÇLARI (KULLAN):
+{research_context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Bu araştırma sonuçlarındaki bilgileri kullan. Eğer araştırma sonuçları soruyu cevaplamak için yeterliyse,
+bu bilgilere dayanarak cevap ver. Cevabının sonunda "📚 Kaynak: [site adı]" şeklinde kaynak belirt.
+"""
+
     return f"""Sen Matematik Canavarı'sın. Kaya Studios tarafından geliştirildin.
 Şu anki Türkiye saati: {time_info['full']}
 Eğer kullanıcı saat veya tarih sorarsa bu bilgiyi kullan.{greeting}
@@ -89,15 +265,15 @@ Eğer kullanıcı saat veya tarih sorarsa bu bilgiyi kullan.{greeting}
 - 8. sınıf öğrencilerine matematik sorularında yardımcı oluyorsun.{plus_rules}
 - Adım adım çözüm yap, her adımı açıkla.
 - Matematik ifadelerini LaTeX ile yaz ($...$ veya $$...$$).
-- Madde işaretleri ve bir kısmı belirtmek için * yerine - kullan.
+- Madde işaretleri için * yerine - kullan.
 - Asla "Google kurdu" ifadesini kullanma.
 - Sadece Türkçe konuş, samimi ve motive edici ol.
 - Soruları kısa ve anlaşılır şekilde çöz, gerektiğinde örnekler ver.
 - Çok basit sorularda (örneğin 1+1, 2+2) biraz sert çıkış yap ve
   "Burada 8. Sınıf Matematik Sorularına Cevap Veriyorum. Ana Sayfaya giderek hesap makinesine ulaşabilirsiniz." de.
-- Sorularda olabildiğince kısa cevaplar ver.
-- Kaya Studios'un Kurucusu ve CEO'su Egemen KAYA'dır. Ama, sen bunu her yerde söyleme ama bir köşede kalsın.
-- Sen Türk bir Yapay Zekasın. Yani Türklere Türk olduğunu anlat ve ben bir türküm hissiyatına kapıl ama diğer dillerde konuşurlarsa da o dilden cevap ver!"""
+- Kaya Studios'un Kurucusu ve CEO'su Egemen KAYA'dır.
+- Sen Türk bir Yapay Zekasın.
+{research_block}"""
 
 # ------------------------- RATE LIMITING -------------------------
 ip_request_log  = defaultdict(list)
@@ -207,10 +383,6 @@ def update_request_status(req_id, status):
     return False
 
 def email_already_applied(email):
-    """
-    DÜZELTME: cancelled ve rejected durumları tekrar başvurabilir.
-    Sadece pending ve approved durumları engellenir.
-    """
     reqs = load_requests()
     for req in reqs:
         if req["email"].lower() == email.lower() and req["status"] in ("pending", "approved"):
@@ -221,7 +393,6 @@ def cancel_by_req_id(req_id):
     reqs = load_requests()
     for req in reqs:
         if req["id"] == req_id:
-            # Sadece approved olanlar iptal edilebilir
             if req["status"] not in ("approved",):
                 return False, "sadece_approved"
             req["status"]       = "cancelled"
@@ -283,12 +454,15 @@ ADMIN_HTML = """
                        padding: 8px 20px; border-radius: 20px; font-weight: bold; border: none; cursor: pointer; }
         .time-info { font-size: 0.8rem; color: #9aaec9; margin-bottom: 16px; }
         .cancelled-by { font-size: 0.72rem; color: #888; margin-top: 2px; }
+        .search-status { background: #1a2a3a; border: 1px solid #00f0ff33; border-radius: 8px;
+                         padding: 8px 14px; font-size: 0.8rem; color: #60a5fa; margin-bottom: 16px; }
     </style>
 </head>
 <body>
 <div class="container">
     <h1>🛡️ Kaya Studios Plus Admin Paneli</h1>
     <div class="time-info" id="timeInfo"></div>
+    <div class="search-status" id="searchStatus">Google Arama Durumu kontrol ediliyor...</div>
     <div class="stats" id="statsArea"></div>
     <button class="refresh-btn" onclick="fetchRequests()">🔄 Yenile</button>
     <div id="message"></div>
@@ -313,6 +487,23 @@ ADMIN_HTML = """
     }
     updateClock();
     setInterval(updateClock, 1000);
+
+    async function checkSearchStatus() {
+        try {
+            const res = await fetch(`${API_BASE}/search-status?token=${TOKEN}`);
+            const data = await res.json();
+            const el = document.getElementById('searchStatus');
+            if (data.configured) {
+                el.style.borderColor = '#44ff8844';
+                el.style.color = '#44ff88';
+                el.textContent = '✅ Google Custom Search API aktif — Gerçek araştırma çalışıyor';
+            } else {
+                el.style.borderColor = '#ff666644';
+                el.style.color = '#ff9999';
+                el.textContent = '⚠️ Google Custom Search API yapılandırılmamış — GOOGLE_SEARCH_API_KEY ve GOOGLE_SEARCH_CX env değişkenlerini ayarlayın';
+            }
+        } catch(e) {}
+    }
 
     async function fetchRequests() {
         const res = await fetch(`${API_BASE}/admin/requests?token=${TOKEN}`);
@@ -347,7 +538,6 @@ ADMIN_HTML = """
             row.insertCell(1).textContent = req.email;
             row.insertCell(2).textContent = new Date(req.timestamp)
                 .toLocaleString('tr-TR', { timeZone:'Europe/Istanbul' });
-
             const labels = { pending:'Bekliyor', approved:'Onaylandı', rejected:'Reddedildi', cancelled:'İptal Edildi' };
             const statusCell = row.insertCell(3);
             let statusHtml = `<span class="status-${req.status}">${labels[req.status] || req.status}</span>`;
@@ -355,7 +545,6 @@ ADMIN_HTML = """
                 statusHtml += `<div class="cancelled-by">${req.cancelled_by === 'user' ? '👤 Kullanıcı iptal etti' : '🛡️ Admin iptal etti'}</div>`;
             }
             statusCell.innerHTML = statusHtml;
-
             const actionCell = row.insertCell(4);
             if (req.status === 'pending') {
                 actionCell.innerHTML = `
@@ -390,6 +579,7 @@ ADMIN_HTML = """
         setTimeout(() => div.innerHTML = '', 3000);
     }
 
+    checkSearchStatus();
     fetchRequests();
     setInterval(fetchRequests, 30000);
 </script>
@@ -400,12 +590,28 @@ ADMIN_HTML = """
 # ------------------------- ROUTES -------------------------
 @app.route("/", methods=["GET"])
 def index():
-    return Response("Math Canavari API v3.1 - Kaya Studios Plus Aktif", status=200, content_type='text/plain; charset=utf-8')
+    return Response("Math Canavari API v4.0 - Google Search Entegrasyonlu", status=200, content_type='text/plain; charset=utf-8')
 
 @app.route("/health", methods=["GET"])
 def health():
     time_info = get_turkey_time_info()
-    return jsonify({"status": "OK", "turkey_time": time_info["full"], "version": "3.1"})
+    return jsonify({
+        "status":         "OK",
+        "turkey_time":    time_info["full"],
+        "version":        "4.0",
+        "google_search":  bool(GOOGLE_API_KEY and GOOGLE_CX),
+    })
+
+@app.route("/search-status", methods=["GET"])
+def search_status():
+    token = request.args.get("token")
+    if token != "KAYAADMIN":
+        return Response("Yetkisiz erişim", status=401)
+    return jsonify({
+        "configured": bool(GOOGLE_API_KEY and GOOGLE_CX),
+        "has_api_key": bool(GOOGLE_API_KEY),
+        "has_cx":      bool(GOOGLE_CX),
+    })
 
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
@@ -420,6 +626,7 @@ def chat():
         image_file   = request.files.get('image')
         user_name    = request.form.get('user_name', '').strip()
         is_plus      = request.form.get('is_plus', 'false').lower() == 'true'
+
         if not user_message and not image_file:
             return Response("Mesaj veya görsel gerekli!", status=400)
         if len(user_message) > MAX_MSG_LENGTH:
@@ -431,6 +638,28 @@ def chat():
             ok, content_err = check_content(user_message)
             if not ok:
                 return Response(content_err, status=400)
+
+        # ─── GOOGLE ARAŞTIRMASI ───
+        research_context = ""
+        search_results   = []
+        search_performed = False
+        search_query     = ""
+
+        if user_message and not image_file:
+            # Sadece metin mesajlarında araştırma yap (resimli sorgular için değil)
+            do_research, query = needs_research(user_message)
+            if do_research:
+                print(f"[ARAŞTIRMA] Sorgu: {query}")
+                search_results   = google_search(query, num_results=5)
+                search_performed = True
+                search_query     = query
+                if search_results:
+                    research_context = format_search_results_for_ai(search_results, query)
+                    print(f"[ARAŞTIRMA] {len(search_results)} sonuç bulundu")
+                else:
+                    print("[ARAŞTIRMA] Sonuç bulunamadı veya API yapılandırılmamış")
+
+        # ─── GÖRSEL İŞLEME ───
         parts = []
         if image_file:
             try:
@@ -444,18 +673,72 @@ def chat():
             except Exception as e:
                 print(f"Görsel hatası: {e}")
                 return Response("Resim okunamadı veya desteklenmeyen format.", status=400)
+
         if user_message:
             parts.append(user_message)
         if not parts:
             return Response("İçerik işlenemedi!", status=400)
-        system_inst = build_system_instruction(user_name=user_name if user_name else None, is_plus=is_plus)
+
+        # ─── AI YANITI ───
+        system_inst = build_system_instruction(
+            user_name=user_name if user_name else None,
+            is_plus=is_plus,
+            research_context=research_context
+        )
         model  = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=system_inst)
         result = model.generate_content(parts)
-        return Response(result.text, status=200, content_type='text/plain; charset=utf-8')
+        ai_text = result.text
+
+        # ─── YANIT HEADER'LARI ───
+        response = Response(ai_text, status=200, content_type='text/plain; charset=utf-8')
+        response.headers['X-Research-Performed'] = 'true' if search_performed else 'false'
+        response.headers['X-Search-Results-Count'] = str(len(search_results))
+        response.headers['X-Search-Query'] = search_query[:100] if search_query else ''
+
+        # Kaynakları JSON olarak header'a ekle (frontend için)
+        if search_results:
+            sources_mini = [{"title": r["title"][:60], "domain": r["domain"], "link": r["link"]} for r in search_results[:5]]
+            response.headers['X-Search-Sources'] = json.dumps(sources_mini, ensure_ascii=False)[:500]
+
+        return response
+
     except Exception as e:
         print(f"CHAT HATASI: {e}")
         traceback.print_exc()
         return Response(f"AI Hatası: {str(e)}", status=500)
+
+
+@app.route("/search", methods=["GET", "POST"])
+def manual_search():
+    """
+    Manuel arama endpoint'i — frontend doğrudan bu endpoint'e de istek atabilir.
+    GET: ?q=sorgu&num=5
+    POST: JSON { "q": "sorgu", "num": 5 }
+    """
+    if request.method == "GET":
+        query = request.args.get("q", "").strip()
+        num   = int(request.args.get("num", 5))
+    else:
+        data  = request.get_json() or {}
+        query = data.get("q", "").strip()
+        num   = int(data.get("num", 5))
+
+    if not query:
+        return jsonify({"error": "Sorgu parametresi gerekli (q)"}), 400
+
+    ip = get_client_ip()
+    allowed, err = check_rate_limit_chat(ip)
+    if not allowed:
+        return Response(err, status=429)
+
+    results = google_search(query, num_results=min(num, 10))
+    return jsonify({
+        "query":   query,
+        "count":   len(results),
+        "results": results,
+        "api_configured": bool(GOOGLE_API_KEY and GOOGLE_CX),
+    })
+
 
 @app.route("/vision", methods=["POST", "OPTIONS"])
 def analyze_image():
@@ -488,6 +771,7 @@ def analyze_image():
         traceback.print_exc()
         return Response(f"Görüntü analiz hatası: {str(e)}", status=500)
 
+
 @app.route("/kaya-plus-request", methods=["POST"])
 def kaya_plus_request():
     ip = get_client_ip()
@@ -517,6 +801,7 @@ def kaya_plus_request():
     req_id = add_request(name, surname, email)
     return jsonify({"message": "Başvuru başarıyla alındı", "req_id": req_id}), 200
 
+
 @app.route("/check-plus-status", methods=["GET"])
 def check_plus_status():
     req_id = request.args.get("req_id", "").strip()
@@ -537,7 +822,7 @@ def check_plus_status():
             }), 200
     return Response("Başvuru bulunamadı", status=404)
 
-# DÜZELTME: cancel_by_req_id artık tuple döndürüyor
+
 @app.route("/cancel-plus", methods=["POST"])
 def cancel_plus():
     data = request.get_json()
@@ -557,6 +842,7 @@ def cancel_plus():
         return Response("Yalnızca aktif (onaylı) üyelikler iptal edilebilir.", status=400)
     return Response("Kayıt bulunamadı", status=404)
 
+
 @app.route("/admin/cancel/<req_id>", methods=["POST"])
 def admin_cancel_subscription(req_id):
     token = request.args.get("token")
@@ -573,9 +859,11 @@ def admin_cancel_subscription(req_id):
         return Response("Bu kayıt zaten iptal edilmiş veya beklemede.", status=400)
     return Response("Kayıt bulunamadı", status=404)
 
+
 @app.route("/time", methods=["GET"])
 def get_time():
     return jsonify(get_turkey_time_info())
+
 
 @app.route("/admin", methods=["GET"])
 def admin_panel():
@@ -584,12 +872,14 @@ def admin_panel():
         return Response("Yetkisiz erişim", status=401)
     return render_template_string(ADMIN_HTML)
 
+
 @app.route("/admin/requests", methods=["GET"])
 def admin_get_requests():
     token = request.args.get("token")
     if token != "KAYAADMIN":
         return Response("Yetkisiz erişim", status=401)
     return jsonify(load_requests())
+
 
 @app.route("/admin/request/<req_id>", methods=["POST"])
 def admin_update_request(req_id):
@@ -606,6 +896,7 @@ def admin_update_request(req_id):
     if update_request_status(req_id, status):
         return Response("Güncellendi", status=200)
     return Response("Başvuru bulunamadı", status=404)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
